@@ -2,21 +2,25 @@
 
 static char help[] = "Solves a series of linear systems using KSPHPDDM.\n\n";
 
-// int gcrodr(int argc, char **args)
 int main(int argc, char **args)
 {
-  Vec x, b; /* computed solution and RHS */
-  Mat A;    /* linear system matrix */
-  KSP ksp;  /* linear solver context */
-
-  PetscInt i, j, nmat = 2;
+  Vec x, b;
+  Mat A;
+  KSP ksp;
+#if defined(PETSC_HAVE_HPDDM)
+  Mat U;
+#endif
+  PetscInt    i, j, nmat = 100;
+  PetscInt    mat_dim = 52900;
+  PetscInt    k_dim = 20;
   PetscViewer viewer;
-  char dir[PETSC_MAX_PATH_LEN], dir_output[1000], dir_x[1000], name[256];
-  PetscBool flg, reset = PETSC_FALSE;
+  char        dir[PETSC_MAX_PATH_LEN], dir_output[1000], dir_x[1000], name[256];
+  PetscBool   flg, reset = PETSC_FALSE;
+
 
   PetscInt iter;
   PetscReal rnorm;
-  char filename[PETSC_MAX_PATH_LEN]; 
+  char filename[PETSC_MAX_PATH_LEN];
   char filename_total_iter[PETSC_MAX_PATH_LEN];
   char filename_total_rnorm[PETSC_MAX_PATH_LEN];
 
@@ -24,18 +28,24 @@ int main(int argc, char **args)
 
   PetscFunctionBeginUser;
   PetscCall(PetscInitialize(&argc, &args, NULL, help));
+  
   PetscCall(PetscStrncpy(dir, ".", sizeof(dir)));
   PetscCall(PetscOptionsGetString(NULL, NULL, "-load_dir", dir, sizeof(dir), NULL));
-
+  
   PetscCall(PetscStrncpy(dir_output, ".", sizeof(dir_output)));
   PetscCall(PetscOptionsGetString(NULL, NULL, "-load_dir_output", dir_output, sizeof(dir_output), NULL));
-
+  
   PetscCall(PetscStrncpy(dir_x, ".", sizeof(dir_x)));
   PetscCall(PetscOptionsGetString(NULL, NULL, "-load_dir_x", dir_x, sizeof(dir_x), NULL));
-
+  
   PetscCall(PetscOptionsGetInt(NULL, NULL, "-nmat", &nmat, NULL));
   PetscCall(PetscOptionsGetBool(NULL, NULL, "-reset", &reset, NULL));
+  PetscCall(PetscOptionsGetInt(NULL, NULL, "-mat_dim", &mat_dim, NULL));
+  PetscCall(PetscOptionsGetInt(NULL, NULL, "-k_dim", &k_dim, NULL));
+  
   PetscCall(MatCreate(PETSC_COMM_WORLD, &A));
+  PetscCall(MatCreateDense(PETSC_COMM_WORLD, PETSC_DECIDE, PETSC_DECIDE, mat_dim, k_dim, NULL, &U));
+
   PetscCall(KSPCreate(PETSC_COMM_WORLD, &ksp));
   PetscCall(KSPSetOperators(ksp, A, A));
 
@@ -44,23 +54,38 @@ int main(int argc, char **args)
   snprintf(filename_total_rnorm, PETSC_MAX_PATH_LEN, "%s/total/output_total_rnorm.txt", dir_output);
   FILE *file_total_rnorm = fopen(filename_total_rnorm, "w");
 
-  for (i = 0; i < nmat; i++)
-  {
+
+  for (i = 0; i < nmat; i++) {
     j = i ;
     PetscCall(PetscSNPrintf(name, sizeof(name), "%s/A_%" PetscInt_FMT ".dat", dir, j));
     PetscCall(PetscViewerBinaryOpen(PETSC_COMM_WORLD, name, FILE_MODE_READ, &viewer));
     PetscCall(MatLoad(A, viewer));
     PetscCall(PetscViewerDestroy(&viewer));
-    if (i == 0)
-      PetscCall(MatCreateVecs(A, &x, &b));
+
+    PetscCall(PetscSNPrintf(name, sizeof(name), "%s/U_%" PetscInt_FMT ".dat", dir, j));
+    PetscCall(PetscViewerBinaryOpen(PETSC_COMM_WORLD, name, FILE_MODE_READ, &viewer));
+    PetscCall(MatLoad(U, viewer));
+    PetscCall(PetscViewerDestroy(&viewer));
+
+    if (i == 0) PetscCall(MatCreateVecs(A, &x, &b));
     PetscCall(PetscSNPrintf(name, sizeof(name), "%s/rhs_%" PetscInt_FMT ".dat", dir, j));
     PetscCall(PetscViewerBinaryOpen(PETSC_COMM_WORLD, name, FILE_MODE_READ, &viewer));
     PetscCall(VecLoad(b, viewer));
+
+
+
     PetscCall(PetscViewerDestroy(&viewer));
     PetscCall(KSPSetFromOptions(ksp));
+#if defined(PETSC_HAVE_HPDDM)
+    PetscCall(KSPReset(ksp));
+    PetscCall(KSPSetOperators(ksp, A, A));
+    PetscCall(KSPSetFromOptions(ksp));
+    PetscCall(KSPSetUp(ksp));
+    PetscCall(KSPHPDDMSetDeflationMat(ksp, U));
+#endif
+
     PetscCall(KSPSolve(ksp, b, x));
     PetscCall(PetscObjectTypeCompare((PetscObject)ksp, KSPHPDDM, &flg));
-
 
     snprintf(filename, PETSC_MAX_PATH_LEN, "%s/output_%d.txt", dir_output, j);
     FILE *file = fopen(filename, "w");
@@ -84,15 +109,11 @@ int main(int argc, char **args)
     PetscViewerBinaryOpen(PETSC_COMM_WORLD, filename, FILE_MODE_WRITE, &filex);
     VecView(x, filex);
     PetscViewerDestroy(&filex);
-
   }
-
-  fclose(file_total_iter);
-  fclose(file_total_rnorm);
-
   PetscCall(VecDestroy(&x));
   PetscCall(VecDestroy(&b));
   PetscCall(MatDestroy(&A));
+  PetscCall(MatDestroy(&U));
   PetscCall(KSPDestroy(&ksp));
   PetscCall(PetscFinalize());
   return 0;
